@@ -1,0 +1,825 @@
+#!/usr/bin/env bash
+set -e
+BRANCH="pixclaim/init-structure"
+COMMIT_MSG="feat(init): add PixClaim agents skeleton, connectors and ingestion scripts"
+
+echo "==> Creando rama: $BRANCH"
+git checkout -b "$BRANCH" || git checkout "$BRANCH"
+
+echo "==> Creando estructura de archivos..."
+
+mkdir -p src/agents src/conductor src/services/payments src/services/api src/services src/connectors src/utils scripts sql data monitoring backups
+
+cat > docker-compose.yml <<'EOF'
+version: "3.8"
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: appdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  conductor:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=conductor
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  monetizador:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=monetizador
+      - STRIPE_API_KEY=${STRIPE_API_KEY}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  operaciones:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=operaciones
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.46.0
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  redis_data:
+  pgdata:
+EOF
+
+cat > requirements.txt <<'EOF'
+fastapi
+uvicorn[standard]
+aioredis
+asyncpg
+sqlalchemy[aio]
+pydantic
+python-dotenv
+stripe
+httpx
+prometheus-client
+psycopg2-binary
+pytest
+pytest-asyncio
+loguru
+python-json-logger
+EOF
+
+cat > .env.example <<'EOF'
+# Entorno
+APP_ENV=development
+SECRET_KEY=changeme
+DATABASE_URL=postgresql+asyncpg://app:changeme@postgres:5432/appdb
+REDIS_URL=redis://redis:6379/0
+STRIPE_API_KEY=sk_test_xxx
+WEAVIATE_URL=http://weaviate:8080
+
+# Agent settings
+AGENT_NAME=conductor
+EOF
+
+cat > src/agents/base_agent.py <<'EOF'
+import abc
+import asyncio
+import json
+import logging
+from typing import List
+import aioredis
+
+from src.utils.logger import get_logger
+
+logger = get_logger("agent.base")
+
+class BaseAgent(abc.ABC):
+    def __init__(self, name: str, redis_url: str):
+        self.name = name
+        self.redis_url = redis_url
+        self.redis = None
+        self.running = False
+
+    async def connect(self):
+        self.redis = await aioredis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+        logger.info({"agent": self.name, "action": "connected_redis"})
+
+    @abc.abstractmethod
+    async def start(self):
+        """Start the agent main loop"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def handle_message(self, channel: str, message: dict):
+        """Handle incoming pub/sub messages"""
+        raise NotImplementedError
+
+    async def publish(self, channel: str, message: dict):
+        try:
+            await self.redis.publish(channel, json.dumps(message))
+            logger.debug({"agent": self.name, "action": "publish", "channel": channel, "message": message})
+        except Exception as e:
+            logger.exception({"agent": self.name, "action": "publish_failed", "error": str(e)})
+
+    async def _listen(self, channels: List[str]):
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe(*channels)
+        logger.info({"agent": self.name, "action": "subscribed", "channels": channels})
+        async for raw in pubsub.listen():
+            if raw is None or raw.get("type") != "message":
+                continue
+            try:
+                ch = raw.get("channel")
+                data = json.loads(raw.get("data"))
+                await self.handle_message(ch, data)
+            except Exception as e:
+                logger.exception({"agent": self.name, "action": "handle_message_error", "error": str(e)})
+
+    async def _heartbeat_loop(self, interval: int = 30):
+        while self.running:
+            await self.publish("conductor:events", {"event": "heartbeat", "agent": self.name})
+            await asyncio.sleep(interval)
+
+    async def run(self, channels: List[str] = []):
+        await self.connect()
+        self.running = True
+        tasks = []
+        if channels:
+            tasks.append(asyncio.create_task(self._listen(channels)))
+        tasks.append(asyncio.create_task(self._heartbeat_loop()))
+        await asyncio.gather(*tasks)
+EOF
+
+cat > src/agents/monetizador_agent.py <<'EOF'
+import asyncio
+import logging
+from src.agents.base_agent import BaseAgent
+from src.services.payments.stripe_service import StripeService
+from src.utils.logger import get_logger
+
+logger = get_logger("agent.monetizador")
+
+class Monetizador(BaseAgent):
+    def __init__(self, redis_url: str, stripe_api_key: str):
+        super().__init__("monetizador", redis_url)
+        self.stripe = StripeService(stripe_api_key)
+
+    async def start(self):
+        await self.run(channels=["business:estimates", "conductor:control"])
+
+    async def handle_message(self, channel: str, message: dict):
+        event = message.get("event")
+        if event == "estimate.completed":
+            await self.handle_estimate_completed(message)
+        elif event == "conductor.command":
+            logger.info({"received": message})
+
+    async def handle_estimate_completed(self, payload: dict):
+        base = payload.get("amount", 0.0)
+        take_rate = 0.02
+        fee = round(base * take_rate, 2)
+        customer_id = payload.get("metadata", {}).get("customer_id")
+        if not customer_id:
+            await self.publish("payments:events", {"event": "payment.failed", "estimate": payload.get("id"), "reason": "no_customer"})
+            return
+        try:
+            resp = self.stripe.create_charge(customer_id, fee, currency="usd", metadata={"estimate": payload.get("id")})
+            await self.publish("payments:events", {"event": "payment.succeeded", "estimate": payload.get("id"), "amount": fee})
+            logger.info({"agent": self.name, "action": "charged", "amount": fee, "customer": customer_id})
+        except Exception as e:
+            logger.exception({"agent": self.name, "action": "charge_failed", "error": str(e)})
+            await self.publish("payments:events", {"event": "payment.failed", "estimate": payload.get("id"), "reason": str(e)})
+EOF
+
+cat > src/conductor/conductor_agent.py <<'EOF'
+import asyncio
+from src.agents.base_agent import BaseAgent
+from src.utils.logger import get_logger
+
+logger = get_logger("agent.conductor")
+
+class Conductor(BaseAgent):
+    def __init__(self, redis_url: str):
+        super().__init__("conductor", redis_url)
+
+    async def start(self):
+        await self.run(channels=["conductor:control"])
+
+    async def handle_message(self, channel: str, message: dict):
+        cmd = message.get("cmd")
+        if cmd == "deploy.service":
+            await self.publish("infra:ops", {"event": "deploy", "service": message.get("service"), "version": message.get("version"), "request_id": message.get("request_id")})
+            logger.info({"agent": self.name, "action": "forward_deploy", "service": message.get("service")})
+        else:
+            logger.info({"agent": self.name, "action": "unknown_command", "payload": message})
+EOF
+
+cat > src/utils/logger.py <<'EOF'
+import logging
+from pythonjsonlogger import jsonlogger
+
+def get_logger(name: str):
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        fmt = jsonlogger.JsonFormatter('%(asctime)s %(name)s %(levelname)s %(message)s')
+        handler.setFormatter(fmt)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    return logger
+EOF
+
+cat > src/services/payments/stripe_service.py <<'EOF'
+import stripe
+from src.utils.logger import get_logger
+
+logger = get_logger("service.stripe")
+
+class StripeService:
+    def __init__(self, api_key: str):
+        stripe.api_key = api_key
+
+    def create_charge(self, customer_id: str, amount: float, currency: str = "usd", metadata: dict | None = None):
+        try:
+            intent = stripe.PaymentIntent.create(
+                amount=int(amount * 100),
+                currency=currency,
+                customer=customer_id,
+                metadata=metadata or {}
+            )
+            logger.info({"action": "payment_intent_created", "id": intent.id})
+            return {"id": intent.id}
+        except Exception as e:
+            logger.exception({"action": "stripe_error", "error": str(e)})
+            raise
+EOF
+
+cat > src/services/api/routes.py <<'EOF'
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import os
+import json
+import asyncio
+
+app = FastAPI(title="PixClaim API")
+
+class EstimateRequest(BaseModel):
+    vin: str
+    photos: list
+    customer_id: str | None = None
+
+@app.post("/api/v1/estimate")
+async def create_estimate(req: EstimateRequest):
+    estimate_id = "est_" + os.urandom(4).hex()
+    event = {
+        "event": "estimate.completed",
+        "id": estimate_id,
+        "vin": req.vin,
+        "amount": 1200.0,
+        "confidence": 0.85,
+        "metadata": {"customer_id": req.customer_id}
+    }
+    return {"status": "queued", "estimate_id": estimate_id, "preview": event}
+
+@app.post("/api/v1/subscribe")
+async def subscribe(customer_email: str):
+    return {"customer_id": "cus_demo_123", "status": "created"}
+EOF
+
+cat > agents_config.yaml <<'EOF'
+agents:
+  conductor:
+    name: "conductor"
+    channels:
+      - "conductor:control"
+      - "conductor:events"
+  monetizador:
+    name: "monetizador"
+    channels:
+      - "business:estimates"
+      - "conductor:control"
+  operaciones:
+    name: "operaciones"
+    channels:
+      - "infra:ops"
+      - "conductor:control"
+  optimizador:
+    name: "optimizador"
+    channels:
+      - "metrics:stream"
+      - "conductor:control"
+  centinela:
+    name: "centinela"
+    channels:
+      - "security:alerts"
+      - "conductor:control"
+  analista:
+    name: "analista"
+    channels:
+      - "metrics:stream"
+      - "business:estimates"
+EOF
+
+cat > scripts/start.sh <<'EOF'
+#!/usr/bin/env bash
+set -e
+echo "Starting PixClaim stack (docker-compose)..."
+docker compose up -d --build
+echo "All services requested. Use 'docker compose logs -f' to follow."
+EOF
+chmod +x scripts/start.sh
+
+cat > scripts/setup.sh <<'EOF'
+#!/usr/bin/env bash
+set -e
+echo "Setup script: prepare environment"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+echo "Environment ready. Use 'scripts/start.sh' to run docker compose."
+EOF
+chmod +x scripts/setup.sh
+
+cat > scripts/backup.sh <<'EOF'
+#!/usr/bin/env bash
+set -e
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+echo "Dumping Postgres DB to backups/db_${TIMESTAMP}.sql"
+mkdir -p backups
+docker exec -t $(docker compose ps -q postgres) pg_dump -U app appdb > backups/db_${TIMESTAMP}.sql
+echo "Backup complete: backups/db_${TIMESTAMP}.sql"
+EOF
+chmod +x scripts/backup.sh
+
+cat > sql/schema.sql <<'EOF'
+-- Minimal schema for vehicles and recalls
+CREATE TABLE IF NOT EXISTS vehicles (
+  vin TEXT PRIMARY KEY,
+  make TEXT,
+  model TEXT,
+  model_year INTEGER,
+  trim TEXT,
+  body_class TEXT,
+  raw JSONB,
+  ingested_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS recalls (
+  recall_id TEXT PRIMARY KEY,
+  vin TEXT,
+  make TEXT,
+  model TEXT,
+  year INTEGER,
+  component TEXT,
+  summary TEXT,
+  remedy TEXT,
+  raw JSONB,
+  ingested_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_log (
+  id SERIAL PRIMARY KEY,
+  source TEXT,
+  key TEXT,
+  raw_hash TEXT,
+  status TEXT,
+  created_at TIMESTAMP DEFAULT now()
+);
+EOF
+
+cat > src/connectors/fetcher.py <<'EOF'
+# Simple fetcher reutilizable con backoff, ETag support
+import httpx
+import asyncio
+import time
+from typing import Optional
+
+async def fetch_json(url: str, params: dict = None, headers: dict = None, timeout: int = 30, retries: int = 3):
+    headers = headers or {}
+    params = params or {}
+    backoff = 1.0
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(retries):
+            try:
+                r = await client.get(url, params=params, headers=headers)
+                r.raise_for_status()
+                return r.json(), r.headers
+            except httpx.HTTPStatusError as e:
+                if 400 <= e.response.status_code < 500 and e.response.status_code != 429:
+                    raise
+                await asyncio.sleep(backoff)
+                backoff *= 2
+            except Exception:
+                await asyncio.sleep(backoff)
+                backoff *= 2
+    raise RuntimeError(f"Failed fetching {url} after {retries} attempts")
+EOF
+
+cat > src/connectors/schemas.py <<'EOF'
+from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+
+class VehicleRecord(BaseModel):
+    vin: str
+    make: Optional[str]
+    model: Optional[str]
+    model_year: Optional[int]
+    trim: Optional[str]
+    body_class: Optional[str]
+    raw: Dict[str, Any]
+
+class RecallRecord(BaseModel):
+    recall_id: str
+    vin: Optional[str]
+    make: Optional[str]
+    model: Optional[str]
+    year: Optional[int]
+    component: Optional[str]
+    summary: Optional[str]
+    remedy: Optional[str]
+    raw: Dict[str, Any]
+EOF
+
+cat > src/connectors/nhtsa_vpic.py <<'EOF'
+# Connector: NHTSA VPIC - VIN decode
+import os
+import asyncio
+from src.connectors.fetcher import fetch_json
+from src.connectors.schemas import VehicleRecord
+from src.services.database import upsert_vehicle_record
+from src.services.redis_pub import publish_event
+
+VPIC_BASE = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVINValues/"
+
+async def ingest_vin(vin: str):
+    url = f"{VPIC_BASE}{vin}?format=json"
+    data, headers = await fetch_json(url)
+    results = data.get("Results", [{}])[0]
+    rec = VehicleRecord(
+        vin=vin,
+        make=results.get("Make"),
+        model=results.get("Model"),
+        model_year=int(results.get("ModelYear")) if results.get("ModelYear") else None,
+        trim=results.get("Trim"),
+        body_class=results.get("BodyClass"),
+        raw=results
+    )
+    await upsert_vehicle_record(rec)
+    await publish_event("data.ingested.nhtsa_vpic", {"source":"nhtsa_vpic","vin":vin})
+    return rec
+
+if __name__ == "__main__":
+    import sys
+    vin = sys.argv[1] if len(sys.argv)>1 else "1HGCM82633A004352"
+    import asyncio
+    asyncio.run(ingest_vin(vin))
+EOF
+
+cat > src/connectors/nhtsa_recalls.py <<'EOF'
+# Connector: NHTSA Recalls
+import asyncio
+from src.connectors.fetcher import fetch_json
+from src.connectors.schemas import RecallRecord
+from src.services.database import upsert_recall_record
+from src.services.redis_pub import publish_event
+
+RECALL_BASE = "https://api.nhtsa.gov/recalls/recallsByVin/"
+
+async def ingest_recalls_by_vin(vin: str):
+    url = f"{RECALL_BASE}{vin}"
+    data, headers = await fetch_json(url)
+    results = data.get("results", [])
+    saved = []
+    for r in results:
+        rec = RecallRecord(
+            recall_id=r.get("NHTSACampaignNumber") or r.get("ReportReceivedDate") or r.get("RecallNumber",""),
+            vin=vin,
+            make=r.get("Make"),
+            model=r.get("Model"),
+            year=r.get("ModelYear"),
+            component=r.get("Component"),
+            summary=r.get("Summary"),
+            remedy=r.get("Remedy"),
+            raw=r
+        )
+        await upsert_recall_record(rec)
+        saved.append(rec)
+    await publish_event("data.ingested.nhtsa_recalls", {"source":"nhtsa_recalls","vin":vin,"count":len(saved)})
+    return saved
+EOF
+
+cat > src/services/database.py <<'EOF'
+# Minimal async DB persistence (SQLAlchemy async) - upsert examples
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_async_engine(DATABASE_URL, future=True, echo=False)
+AsyncSessionLocal = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+async def upsert_vehicle_record(rec):
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("""
+        INSERT INTO vehicles(vin, make, model, model_year, trim, body_class, raw)
+        VALUES(:vin,:make,:model,:model_year,:trim,:body_class,:raw)
+        ON CONFLICT (vin) DO UPDATE SET make=EXCLUDED.make, model=EXCLUDED.model, model_year=EXCLUDED.model_year, raw=EXCLUDED.raw;
+        """), {"vin":rec.vin,"make":rec.make,"model":rec.model,"model_year":rec.model_year,"trim":rec.trim,"body_class":rec.body_class,"raw":str(rec.raw)})
+        await session.commit()
+
+async def upsert_recall_record(rec):
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("""
+        INSERT INTO recalls(recall_id, vin, make, model, year, component, summary, remedy, raw)
+        VALUES(:recall_id,:vin,:make,:model,:year,:component,:summary,:remedy,:raw)
+        ON CONFLICT (recall_id) DO UPDATE SET summary=EXCLUDED.summary, remedy=EXCLUDED.remedy, raw=EXCLUDED.raw;
+        """), {"recall_id":rec.recall_id,"vin":rec.vin,"make":rec.make,"model":rec.model,"year":rec.year,"component":rec.component,"summary":rec.summary,"remedy":rec.remedy,"raw":str(rec.raw)})
+        await session.commit()
+EOF
+
+cat > src/services/redis_pub.py <<'EOF'
+import os
+import aioredis
+import json
+
+REDIS_URL = os.getenv("REDIS_URL","redis://localhost:6379/0")
+
+async def publish_event(channel: str, payload: dict):
+    r = await aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    await r.publish(channel, json.dumps(payload))
+    await r.close()
+EOF
+
+cat > scripts/ingest_batch.py <<'EOF'
+#!/usr/bin/env python3
+"""Batch ingest script example"""
+import argparse
+import csv
+import asyncio
+from src.connectors.nhtsa_vpic import ingest_vin
+
+async def run_batch(file):
+    vins = []
+    with open(file) as f:
+        r = csv.reader(f)
+        for row in r:
+            if row:
+                vins.append(row[0].strip())
+    for vin in vins:
+        try:
+            await ingest_vin(vin)
+            print("ingested", vin)
+        except Exception as e:
+            print("error", vin, e)
+
+if __name__ == '__main__':
+    p = argparse.ArgumentParser()
+    p.add_argument('--file', required=True)
+    args = p.parse_args()
+    asyncio.run(run_batch(args.file))
+EOF
+chmod +x scripts/ingest_batch.py
+
+cat > data/sample_vins.csv <<'EOF'
+1HGCM82633A004352
+1HGCM82633A004353
+1HGCM82633A004354
+1HGCM82633A004355
+1HGCM82633A004356
+1HGCM82633A004357
+1HGCM82633A004358
+1HGCM82633A004359
+1HGCM82633A004360
+1HGCM82633A004361
+1HGCM82633A004362
+1HGCM82633A004363
+1HGCM82633A004364
+1HGCM82633A004365
+1HGCM82633A004366
+1HGCM82633A004367
+1HGCM82633A004368
+1HGCM82633A004369
+1HGCM82633A004370
+1HGCM82633A004371
+1HGCM82633A004372
+1HGCM82633A004373
+1HGCM82633A004374
+1HGCM82633A004375
+1HGCM82633A004376
+1HGCM82633A004377
+1HGCM82633A004378
+1HGCM82633A004379
+1HGCM82633A004380
+1HGCM82633A004381
+1HGCM82633A004382
+1HGCM82633A004383
+1HGCM82633A004384
+1HGCM82633A004385
+1HGCM82633A004386
+1HGCM82633A004387
+1HGCM82633A004388
+1HGCM82633A004389
+1HGCM82633A004390
+1HGCM82633A004391
+1HGCM82633A004392
+1HGCM82633A004393
+1HGCM82633A004394
+1HGCM82633A004395
+1HGCM82633A004396
+1HGCM82633A004397
+1HGCM82633A004398
+1HGCM82633A004399
+1HGCM82633A004400
+1HGCM82633A004401
+1HGCM82633A004402
+1HGCM82633A004403
+1HGCM82633A004404
+1HGCM82633A004405
+1HGCM82633A004406
+1HGCM82633A004407
+1HGCM82633A004408
+1HGCM82633A004409
+1HGCM82633A004410
+1HGCM82633A004411
+1HGCM82633A004412
+1HGCM82633A004413
+1HGCM82633A004414
+1HGCM82633A004415
+1HGCM82633A004416
+1HGCM82633A004417
+1HGCM82633A004418
+1HGCM82633A004419
+1HGCM82633A004420
+1HGCM82633A004421
+1HGCM82633A004422
+1HGCM82633A004423
+1HGCM82633A004424
+1HGCM82633A004425
+1HGCM82633A004426
+1HGCM82633A004427
+1HGCM82633A004428
+1HGCM82633A004429
+1HGCM82633A004430
+1HGCM82633A004431
+1HGCM82633A004432
+1HGCM82633A004433
+1HGCM82633A004434
+1HGCM82633A004435
+1HGCM82633A004436
+1HGCM82633A004437
+1HGCM82633A004438
+1HGCM82633A004439
+1HGCM82633A004440
+1HGCM82633A004441
+1HGCM82633A004442
+1HGCM82633A004443
+1HGCM82633A004444
+1HGCM82633A004445
+1HGCM82633A004446
+1HGCM82633A004447
+1HGCM82633A004448
+1HGCM82633A004449
+1HGCM82633A004450
+1HGCM82633A004451
+1HGCM82633A004452
+1HGCM82633A004453
+1HGCM82633A004454
+1HGCM82633A004455
+1HGCM82633A004456
+1HGCM82633A004457
+1HGCM82633A004458
+1HGCM82633A004459
+1HGCM82633A004460
+1HGCM82633A004461
+1HGCM82633A004462
+1HGCM82633A004463
+1HGCM82633A004464
+1HGCM82633A004465
+1HGCM82633A004466
+1HGCM82633A004467
+1HGCM82633A004468
+1HGCM82633A004469
+1HGCM82633A004470
+1HGCM82633A004471
+1HGCM82633A004472
+1HGCM82633A004473
+1HGCM82633A004474
+1HGCM82633A004475
+1HGCM82633A004476
+1HGCM82633A004477
+1HGCM82633A004478
+1HGCM82633A004479
+1HGCM82633A004480
+1HGCM82633A004481
+1HGCM82633A004482
+1HGCM82633A004483
+1HGCM82633A004484
+1HGCM82633A004485
+1HGCM82633A004486
+1HGCM82633A004487
+1HGCM82633A004488
+1HGCM82633A004489
+1HGCM82633A004490
+1HGCM82633A004491
+1HGCM82633A004492
+1HGCM82633A004493
+1HGCM82633A004494
+1HGCM82633A004495
+1HGCM82633A004496
+1HGCM82633A004497
+1HGCM82633A004498
+1HGCM82633A004499
+1HGCM82633A004500
+EOF
+
+cat > README.md <<'EOF'
+# PixClaim — MVP Agents Skeleton
+
+Estructura mínima para ejecutar los agentes IA orquestados por Redis pub/sub.
+
+Requisitos:
+- Docker & Docker Compose
+- Python 3.11 (para desarrollo local)
+- Tener disponible la variable STRIPE_API_KEY en .env
+
+Pasos rápidos:
+1. Copia `.env.example` a `.env` y ajusta valores.
+2. Construir y levantar:
+   docker compose up -d --build
+3. API: http://localhost:8000/docs (Swagger)
+
+Comandos útiles:
+- Levantar logs:
+  docker compose logs -f api
+- Ejecutar tests:
+  pytest -q
+
+Siguientes pasos:
+- Añadir worker/vision, Weaviate y MinIO a la composición.
+- Completar integración Stripe y endpoints reales de Redis.
+- Ejecutar búsqueda legal para marca y publicar dominio.
+EOF
+
+echo "==> Agregando, commiteando y haciendo push..."
+git add .
+git commit -m "$COMMIT_MSG" || echo "No changes to commit or commit failed"
+git push origin "$BRANCH"
+
+# Si 'gh' está disponible, crear PR automáticamente
+if command -v gh >/dev/null 2>&1; then
+  echo "==> Creando Pull Request con gh..."
+  gh pr create --fill --base main --head "$BRANCH" --title "$COMMIT_MSG" --body "Init: PixClaim agents skeleton, connectors (NHTSA VPIC, NHTSA Recalls), ingestion scripts and sample VINs. Ejecutar scripts/ingest_batch.py para pruebas."
+  echo "PR creado."
+else
+  echo "==> gh CLI no encontrado. Si quieres abrir PR automáticamente instala GitHub CLI o crea PR manualmente:"
+  echo "   gh pr create --fill --base main --head $BRANCH --title \"$COMMIT_MSG\" --body \"Init: PixClaim agents skeleton...\""
+fi
+
+echo "==> Listo. Revisa en GitHub la rama $BRANCH y abre el PR si no se creó automáticamente."
+EOF
+
+echo "==> Script escrito en bootstrap_pixclaim.sh"
+echo "Para ejecutar: chmod +x bootstrap_pixclaim.sh && ./bootstrap_pixclaim.sh"
