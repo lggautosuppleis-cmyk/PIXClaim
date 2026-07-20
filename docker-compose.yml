@@ -1,0 +1,115 @@
+version: "3.8"
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: appdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=api
+      - DATABASE_URL=postgresql+asyncpg://app:changeme@postgres:5432/appdb
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  conductor:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=conductor
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  monetizador:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=monetizador
+      - REDIS_URL=redis://redis:6379/0
+      - STRIPE_API_KEY=${STRIPE_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  operaciones:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=operaciones
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  connectors:
+    build: .
+    image: pixclaim_app:latest
+    environment:
+      - ROLE=connectors
+      - DATABASE_URL=postgresql+asyncpg://app:changeme@postgres:5432/appdb
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.46.0
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  redis_data:
+  pgdata:
+  uploads:

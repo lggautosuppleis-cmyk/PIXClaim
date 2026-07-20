@@ -1,0 +1,31 @@
+agents:
+  conductor:
+    name: "conductor"
+    channels:
+      - "conductor:control"
+      - "conductor:events"
+  monetizador:
+    name: "monetizador"
+    channels:
+      - "business:estimates"
+      - "conductor:control"
+  operaciones:
+    name: "operaciones"
+    channels:
+      - "infra:ops"
+      - "conductor:control"
+  optimizador:
+    name: "optimizador"
+    channels:
+      - "metrics:stream"
+      - "conductor:control"
+  centinela:
+    name: "centinela"
+    channels:
+      - "security:alerts"
+      - "conductor:control"
+  analista:
+    name: "analista"
+    channels:
+      - "metrics:stream"
+      - "business:estimates"

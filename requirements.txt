@@ -1,0 +1,16 @@
+aioredis
+asyncpg
+fastapi
+httpx
+loguru
+prometheus-client
+psycopg2-binary
+pydantic
+pytest
+pytest-asyncio
+python-dotenv
+python-json-logger
+redis
+sqlalchemy[aio]
+stripe
+uvicorn[standard]
