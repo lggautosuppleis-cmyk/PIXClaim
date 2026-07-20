@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PixClaim — Photo to estimate in 90 seconds</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,100..900;1,100..900&family=Archivo+Black&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --asphalt:#101216;
+  --asphalt-2:#171a20;
+  --paper:#F6F5F0;
+  --ink:#16181D;
+  --tape:#FFD60A;
+  --tape-dim:rgba(255,214,10,.14);
+  --smoke:#9aa1ad;
+  --line:#e3e1d8;
+  --mono:'JetBrains Mono',monospace;
+  --disp:'Archivo Black',sans-serif;
+  --body:'Archivo',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--asphalt);color:#f2f3f5;font-family:var(--body);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:var(--tape);color:var(--ink)}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--tape);outline-offset:3px}
+
+/* ---------- NAV ---------- */
+nav{position:fixed;inset:0 0 auto 0;z-index:50;display:flex;justify-content:space-between;align-items:center;padding:1.1rem clamp(1.2rem,4vw,3rem);background:linear-gradient(to bottom,rgba(16,18,22,.85),transparent)}
+.logo{font-family:var(--disp);font-size:1.05rem;letter-spacing:.04em;text-decoration:none;display:flex;align-items:center;gap:.55rem}
+.logo .dot{width:.65rem;height:.65rem;background:var(--tape);border-radius:1px;transform:rotate(45deg)}
+nav .meta{font-family:var(--mono);font-size:.68rem;color:var(--smoke);letter-spacing:.08em;text-transform:uppercase}
+nav .cta-sm{font-family:var(--mono);font-size:.72rem;text-decoration:none;color:var(--ink);background:var(--tape);padding:.55rem .95rem;border-radius:2px;font-weight:700;letter-spacing:.04em}
+@media(max-width:640px){nav .meta{display:none}}
+
+/* ---------- HERO ---------- */
+.hero{min-height:100svh;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);align-items:stretch}
+@media(max-width:900px){.hero{grid-template-columns:1fr}}
+.hero-copy{display:flex;flex-direction:column;justify-content:center;padding:clamp(6rem,10vh,8rem) clamp(1.2rem,4vw,3.5rem) 3rem;position:relative;z-index:2}
+.eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.22em;text-transform:uppercase;color:var(--tape);display:flex;align-items:center;gap:.7rem;margin-bottom:1.6rem}
+.eyebrow::before{content:"";width:2.2rem;height:1px;background:var(--tape)}
+h1{font-family:var(--disp);font-size:clamp(2.4rem,5.4vw,4.6rem);line-height:.98;letter-spacing:-.01em;text-transform:uppercase}
+h1 .strike{position:relative;white-space:nowrap}
+h1 .strike::after{content:"";position:absolute;left:-2%;right:-2%;top:54%;height:.14em;background:var(--tape);transform:scaleX(0);transform-origin:left;animation:strike .7s .9s cubic-bezier(.7,0,.2,1) forwards}
+@keyframes strike{to{transform:scaleX(1)}}
+.hero-sub{margin-top:1.6rem;max-width:34ch;color:var(--smoke);font-size:1.02rem;line-height:1.65;font-weight:340}
+.hero-sub b{color:#e8eaee;font-weight:560}
+.hero-ctas{margin-top:2.4rem;display:flex;flex-wrap:wrap;gap:.9rem;align-items:center}
+.btn-tape{font-family:var(--mono);font-weight:700;font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;text-decoration:none;background:var(--tape);color:var(--ink);padding:1rem 1.6rem;border-radius:2px;transition:transform .18s ease, box-shadow .18s ease}
+.btn-tape:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(255,214,10,.25)}
+.btn-ghost{font-family:var(--mono);font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;text-decoration:none;color:#e8eaee;padding:1rem .4rem;border-bottom:1px solid rgba(255,255,255,.25);transition:border-color .2s}
+.btn-ghost:hover{border-color:var(--tape)}
+.hero-stats{margin-top:3rem;display:flex;gap:2.4rem;flex-wrap:wrap}
+.hstat .n{font-family:var(--mono);font-size:1.35rem;font-weight:700;color:var(--tape)}
+.hstat .l{font-family:var(--mono);font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--smoke);margin-top:.3rem}
+
+/* hero photo + marker annotations */
+.hero-visual{position:relative;overflow:hidden;background:var(--asphalt-2);min-height:60svh}
+.hero-visual img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;filter:saturate(.92)}
+@media(max-width:900px){.hero-visual{order:-1}}
+.mk{position:absolute;border:3px solid var(--tape);border-radius:50%;box-shadow:0 0 14px rgba(255,214,10,.35), inset 0 0 14px rgba(255,214,10,.12);transform:scale(0);opacity:0}
+.mk::after{content:"";position:absolute;right:-14%;top:-8%;width:22%;height:22%;border-top:3px solid var(--tape);border-right:3px solid var(--tape)}
+.loaded .mk.k1{animation:pop .55s .5s cubic-bezier(.2,.9,.3,1.3) forwards}
+.loaded .mk.k2{animation:pop .55s 1.3s cubic-bezier(.2,.9,.3,1.3) forwards}
+.loaded .mk.k3{animation:pop .55s 1.9s cubic-bezier(.2,.9,.3,1.3) forwards}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+.mk.k1{left:12%;top:52%;width:26%;height:23%}
+.mk.k2{left:1%;top:72%;width:20%;height:15%}
+.mk.k3{left:4%;top:56%;width:11%;height:9%}
+.tag{position:absolute;font-family:var(--mono);font-size:.66rem;font-weight:700;letter-spacing:.03em;color:var(--ink);background:var(--tape);padding:.42rem .6rem;border-radius:2px;opacity:0;transform:translateY(8px);transition:opacity .5s ease,transform .5s ease;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.4)}
+.tag small{display:block;font-weight:400;font-size:.6rem;opacity:.75}
+.loaded .tag.t1{transition-delay:1.5s;opacity:1;transform:none}
+.loaded .tag.t2{transition-delay:2.1s;opacity:1;transform:none}
+.loaded .tag.t3{transition-delay:2.7s;opacity:1;transform:none}
+.tag.t1{left:14%;top:44%}
+.tag.t2{left:22%;top:78%}
+.tag.t3{left:17%;top:50%}
+.vin-chip{position:absolute;left:1rem;bottom:1rem;font-family:var(--mono);font-size:.62rem;color:var(--smoke);letter-spacing:.08em;background:rgba(16,18,22,.7);padding:.45rem .7rem;border:1px solid rgba(255,255,255,.1);border-radius:2px;backdrop-filter:blur(6px)}
+
+/* ---------- TICKER ---------- */
+.ticker{border-top:1px solid rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.08);overflow:hidden;padding:.85rem 0;background:var(--asphalt)}
+.ticker-track{display:flex;gap:3rem;white-space:nowrap;font-family:var(--mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--smoke);animation:tick 30s linear infinite;width:max-content}
+.ticker-track span b{color:var(--tape);font-weight:700}
+@keyframes tick{to{transform:translateX(-50%)}}
+
+/* ---------- ESTIMATE SHEET ---------- */
+.sheet{background:var(--paper);color:var(--ink);padding:clamp(4rem,9vh,7rem) clamp(1.2rem,4vw,3.5rem);position:relative}
+.sheet-grid{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(2rem,5vw,5rem);align-items:start}
+@media(max-width:900px){.sheet-grid{grid-template-columns:1fr}}
+.kicker{font-family:var(--mono);font-size:.68rem;letter-spacing:.22em;text-transform:uppercase;color:#8a8578;margin-bottom:1.2rem;display:flex;align-items:center;gap:.7rem}
+.kicker::before{content:"";width:2rem;height:1px;background:#c9c5b8}
+h2{font-family:var(--disp);font-size:clamp(1.9rem,3.6vw,3rem);line-height:1.02;text-transform:uppercase;letter-spacing:-.01em}
+.sheet-lede{margin-top:1.4rem;color:#5b584e;font-size:1rem;line-height:1.7;max-width:36ch;font-weight:340}
+.estimate{background:#fff;border:1px solid var(--line);border-radius:4px;box-shadow:0 24px 60px -30px rgba(22,24,29,.35);overflow:hidden}
+.estimate-head{display:flex;justify-content:space-between;align-items:center;padding:1rem 1.4rem;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:#8a8578}
+.estimate-head .live{display:flex;align-items:center;gap:.45rem;color:var(--ink)}
+.estimate-head .live::before{content:"";width:.5rem;height:.5rem;border-radius:50%;background:#1db954;animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.35}}
+.line-item{display:grid;grid-template-columns:auto 1fr auto auto;gap:1.1rem;align-items:baseline;padding:.95rem 1.4rem;border-bottom:1px dashed var(--line);font-family:var(--mono);font-size:.8rem;opacity:0;transform:translateX(-8px);transition:opacity .45s ease,transform .45s ease}
+.line-item.show{opacity:1;transform:none}
+.line-item .op{color:#8a8578;font-size:.64rem;text-transform:uppercase;letter-spacing:.08em;width:5.4rem}
+.line-item .desc{font-weight:500}
+.line-item .hrs{color:#8a8578;font-size:.7rem}
+.line-item .amt{font-weight:700}
+.estimate-total{display:flex;justify-content:space-between;align-items:center;padding:1.2rem 1.4rem;background:var(--ink);color:#fff}
+.estimate-total .lbl{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--tape)}
+.estimate-total .val{font-family:var(--mono);font-size:1.5rem;font-weight:700;color:var(--tape)}
+.estimate-foot{padding:.8rem 1.4rem;font-family:var(--mono);font-size:.62rem;color:#8a8578;letter-spacing:.06em;background:#fbfaf6}
+
+/* ---------- STEPS ---------- */
+.steps{padding:clamp(4rem,9vh,7rem) clamp(1.2rem,4vw,3.5rem);max-width:1200px;margin:0 auto}
+.steps-grid{margin-top:3rem;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(255,255,255,.1)}
+@media(max-width:800px){.steps-grid{grid-template-columns:1fr}}
+.step{background:var(--asphalt);padding:2.2rem 1.8rem}
+.step .num{font-family:var(--mono);font-size:.68rem;color:var(--tape);letter-spacing:.2em;margin-bottom:1.4rem;display:block}
+.step h3{font-family:var(--disp);font-size:1.15rem;text-transform:uppercase;letter-spacing:.02em;margin-bottom:.9rem}
+.step p{color:var(--smoke);font-size:.92rem;line-height:1.65;font-weight:340}
+.step .kbd{margin-top:1.4rem;display:inline-block;font-family:var(--mono);font-size:.62rem;color:#e8eaee;border:1px solid rgba(255,255,255,.16);padding:.35rem .6rem;border-radius:2px;letter-spacing:.06em}
+
+/* ---------- CITIES ---------- */
+.cities{border-top:1px solid rgba(255,255,255,.08);padding:3rem clamp(1.2rem,4vw,3.5rem);max-width:1200px;margin:0 auto}
+.cities .row{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1.6rem}
+.city{font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--smoke);border:1px solid rgba(255,255,255,.12);padding:.55rem .85rem;border-radius:999px;transition:all .2s}
+.city:hover{color:var(--ink);background:var(--tape);border-color:var(--tape);cursor:default}
+
+/* ---------- PRICING ---------- */
+.pricing{background:var(--paper);color:var(--ink);padding:clamp(4rem,9vh,7rem) clamp(1.2rem,4vw,3.5rem)}
+.pricing-grid{max-width:1200px;margin:3rem auto 0;display:grid;grid-template-columns:repeat(3,1fr);gap:1.2rem}
+@media(max-width:900px){.pricing-grid{grid-template-columns:1fr}}
+.plan{background:#fff;border:1px solid var(--line);border-radius:4px;padding:2rem 1.7rem;display:flex;flex-direction:column;gap:1rem}
+.plan.hot{background:var(--ink);color:#fff;border-color:var(--ink);position:relative}
+.plan.hot::before{content:"MOST CHOSEN";position:absolute;top:-.7rem;left:1.7rem;font-family:var(--mono);font-size:.58rem;font-weight:700;letter-spacing:.18em;background:var(--tape);color:var(--ink);padding:.35rem .6rem;border-radius:2px}
+.plan .name{font-family:var(--mono);font-size:.66rem;letter-spacing:.2em;text-transform:uppercase;color:#8a8578}
+.plan.hot .name{color:var(--tape)}
+.plan .price{font-family:var(--disp);font-size:2.6rem;letter-spacing:-.02em}
+.plan .price small{font-family:var(--mono);font-size:.72rem;font-weight:400;color:#8a8578;letter-spacing:.05em}
+.plan ul{list-style:none;display:flex;flex-direction:column;gap:.6rem;font-size:.88rem;color:#5b584e;font-weight:340}
+.plan.hot ul{color:#c9cdd4}
+.plan ul li::before{content:"—";color:var(--tape);margin-right:.55rem;font-weight:700}
+.plan .go{margin-top:auto;text-align:center;font-family:var(--mono);font-size:.74rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;padding:.95rem;border-radius:2px;border:1px solid var(--ink);color:var(--ink);transition:all .2s}
+.plan .go:hover{background:var(--ink);color:#fff}
+.plan.hot .go{background:var(--tape);border-color:var(--tape);color:var(--ink)}
+.plan.hot .go:hover{box-shadow:0 10px 30px rgba(255,214,10,.3);transform:translateY(-2px)}
+
+/* ---------- FINAL / FOOTER ---------- */
+.final{padding:clamp(5rem,12vh,9rem) clamp(1.2rem,4vw,3.5rem);text-align:center}
+.final h2{font-size:clamp(2.2rem,5vw,4.2rem)}
+.final h2 span{color:var(--tape)}
+.final p{margin:1.4rem auto 2.4rem;color:var(--smoke);max-width:44ch;line-height:1.7;font-weight:340}
+footer{border-top:1px solid rgba(255,255,255,.08);padding:1.6rem clamp(1.2rem,4vw,3.5rem);display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;color:var(--smoke)}
+footer a{text-decoration:none;color:var(--smoke)}
+footer a:hover{color:var(--tape)}
+
+/* ---------- UPLOAD MODAL ---------- */
+.modal{position:fixed;inset:0;z-index:100;display:none;align-items:center;justify-content:center;padding:1rem;background:rgba(10,11,14,.8);backdrop-filter:blur(8px)}
+.modal.open{display:flex}
+.modal-card{background:var(--paper);color:var(--ink);width:100%;max-width:480px;border-radius:6px;overflow:hidden;box-shadow:0 40px 100px rgba(0,0,0,.6);animation:mup .3s cubic-bezier(.2,.9,.3,1.1)}
+@keyframes mup{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+.modal-head{display:flex;justify-content:space-between;align-items:center;padding:1.1rem 1.4rem;background:var(--ink);color:#fff}
+.modal-head span{font-family:var(--disp);font-size:.9rem;text-transform:uppercase;letter-spacing:.03em}
+.modal-close{background:none;border:none;color:var(--tape);font-family:var(--mono);font-size:1.1rem;cursor:pointer;padding:.2rem}
+.modal-body{padding:1.5rem 1.4rem}
+.field{margin-bottom:1.1rem}
+.field label{display:block;font-family:var(--mono);font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:#8a8578;margin-bottom:.45rem}
+.field input[type=text],.field input[type=email]{width:100%;padding:.85rem .9rem;border:1px solid var(--line);border-radius:3px;font-family:var(--mono);font-size:.9rem;background:#fff;color:var(--ink);text-transform:uppercase;letter-spacing:.06em}
+.field input:focus{outline:2px solid var(--tape);border-color:transparent}
+.drop{border:2px dashed #c9c5b8;border-radius:4px;padding:1.8rem 1rem;text-align:center;cursor:pointer;transition:all .2s;background:#fbfaf6}
+.drop:hover,.drop.over{border-color:var(--tape);background:#fffbe0}
+.drop .big{font-family:var(--disp);font-size:.95rem;text-transform:uppercase}
+.drop .small{font-family:var(--mono);font-size:.64rem;color:#8a8578;margin-top:.4rem;letter-spacing:.06em}
+.thumbs{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.8rem}
+.thumbs img{width:64px;height:64px;object-fit:cover;border-radius:3px;border:2px solid var(--tape)}
+.submit-est{width:100%;margin-top:1.2rem;padding:1.05rem;background:var(--tape);border:none;border-radius:3px;font-family:var(--mono);font-weight:700;font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;transition:transform .15s}
+.submit-est:hover{transform:translateY(-2px)}
+.submit-est:disabled{opacity:.5;cursor:wait;transform:none}
+.est-status{margin-top:1rem;font-family:var(--mono);font-size:.72rem;line-height:1.6;display:none;padding:.9rem;border-radius:3px}
+.est-status.ok{display:block;background:#e8f9e8;color:#14532d;border:1px solid #bbf7d0}
+.est-status.err{display:block;background:#fdecec;color:#7f1d1d;border:1px solid #fecaca}
+.est-status.work{display:block;background:#fffbe0;color:#713f12;border:1px solid #fde68a}
+
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.6,.2,1)}
+.reveal.in{opacity:1;transform:none}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}
+  .mk{transform:scale(1)!important;opacity:1!important}
+  .tag,.line-item{opacity:1;transform:none}
+  .reveal{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="logo" href="#"><span class="dot"></span>PIXCLAIM</a>
+  <span class="meta">AI damage estimates · Florida</span>
+  <a class="cta-sm" href="#pricing">Start estimate</a>
+</nav>
+
+<header class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow">PixClaim · Estimate Engine</p>
+    <h1>The shop visit is <span class="strike">optional</span> now.</h1>
+    <p class="hero-sub">Snap the damage. Our AI reads the photos, decodes the VIN, checks open recalls, and writes a line-item estimate — <b>in about 90 seconds</b>. Built for adjusters, body shops, and drivers across Florida.</p>
+    <div class="hero-ctas">
+      <a class="btn-tape" href="#pricing">Upload photos →</a>
+      <a class="btn-ghost" href="#sheet">See a live estimate</a>
+    </div>
+    <div class="hero-stats">
+      <div class="hstat"><div class="n">90s</div><div class="l">avg. estimate</div></div>
+      <div class="hstat"><div class="n">94%</div><div class="l">line accuracy</div></div>
+      <div class="hstat"><div class="n">24/7</div><div class="l">no appointment</div></div>
+    </div>
+  </div>
+  <div class="hero-visual">
+    <img src="assets/hero-car.jpg" alt="White sedan with dented front fender in studio light">
+    <div class="mk k1" aria-hidden="true"></div>
+    <div class="mk k2" aria-hidden="true"></div>
+    <div class="mk k3" aria-hidden="true"></div>
+    <div class="tag t1">FENDER, FRONT LH<small>replace + blend · $1,240</small></div>
+    <div class="tag t2">BUMPER COVER<small>repair + refinish · $685</small></div>
+    <div class="tag t3">HEADLAMP ASSY<small>inspect · included</small></div>
+    <div class="vin-chip">VIN 4T1B···DECODED ✓ &nbsp;RECALLS: 0 OPEN</div>
+  </div>
+</header>
+
+<div class="ticker" aria-hidden="true">
+  <div class="ticker-track" id="tickerTrack">
+    <span>VIN DECODED <b>4T1BF1FK5FU889302</b></span><span>RECALLS CHECKED <b>NHTSA ✓</b></span><span>PHOTOS ANALYZED <b>8 / 8</b></span><span>ESTIMATE READY <b>$1,925.00</b></span><span>PAYMENT <b>STRIPE ✓</b></span>
+  </div>
+</div>
+
+<section class="sheet" id="sheet">
+  <div class="sheet-grid">
+    <div class="reveal">
+      <p class="kicker">The signature</p>
+      <h2>Your photos, already priced.</h2>
+      <p class="sheet-lede">Every estimate reads like the sheet a master estimator would write — operations, parts, labor hours, blend time. No vague ranges. No “come in and we’ll see.”</p>
+      <p class="sheet-lede" style="margin-top:1rem">Adjusters get it free. Shops and drivers pay per estimate. It drops into your workflow as a PDF or straight into your DMS.</p>
+    </div>
+    <div class="estimate reveal" id="estimateCard">
+      <div class="estimate-head"><span>ESTIMATE #PC-2841 · CAMRY 2015</span><span class="live">LIVE</span></div>
+      <div class="line-item"><span class="op">Replace</span><span class="desc">Fender, front LH (CAPA)</span><span class="hrs">2.6 hrs</span><span class="amt">$812</span></div>
+      <div class="line-item"><span class="op">Refinish</span><span class="desc">Blend fender + adjacent panel</span><span class="hrs">1.8 hrs</span><span class="amt">$428</span></div>
+      <div class="line-item"><span class="op">Repair</span><span class="desc">Bumper cover, plastic weld</span><span class="hrs">1.2 hrs</span><span class="amt">$312</span></div>
+      <div class="line-item"><span class="op">Refinish</span><span class="desc">Bumper cover, 3-stage white</span><span class="hrs">2.2 hrs</span><span class="amt">$373</span></div>
+      <div class="line-item"><span class="op">Inspect</span><span class="desc">Headlamp assy + mounting tabs</span><span class="hrs">0.3 hrs</span><span class="amt">$0</span></div>
+      <div class="estimate-total"><span class="lbl">Total · parts + labor + materials</span><span class="val" id="totalVal">$0</span></div>
+      <div class="estimate-foot">LABOR RATE $58/HR · FL MARKET · TAX NOT INCLUDED · VALID 30 DAYS</div>
+    </div>
+  </div>
+</section>
+
+<section class="steps">
+  <div class="reveal">
+    <p class="eyebrow">How it works</p>
+    <h2>Three moves. No phone tag.</h2>
+  </div>
+  <div class="steps-grid">
+    <div class="step reveal">
+      <span class="num">01 / CAPTURE</span>
+      <h3>Snap the damage</h3>
+      <p>Four to eight photos with your phone — wide, mid, close-up, plus the VIN plate. Our guide tells you exactly which angles the AI needs.</p>
+      <span class="kbd">guided capture</span>
+    </div>
+    <div class="step reveal">
+      <span class="num">02 / ANALYZE</span>
+      <h3>AI reads everything</h3>
+      <p>Vision models map the damage to panels, decode the VIN against NHTSA data, flag open recalls, and price parts against live Florida market rates.</p>
+      <span class="kbd">VIN + recalls ✓</span>
+    </div>
+    <div class="step reveal">
+      <span class="num">03 / DELIVER</span>
+      <h3>Estimate in hand</h3>
+      <p>A line-item sheet lands in your inbox in about 90 seconds — PDF, shareable link, or pushed to your shop management system.</p>
+      <span class="kbd">PDF · link · DMS</span>
+    </div>
+  </div>
+</section>
+
+<section class="cities reveal">
+  <p class="eyebrow">Coverage</p>
+  <h2 style="font-size:clamp(1.4rem,2.6vw,2rem)">All of Florida. These cities first.</h2>
+  <div class="row">
+    <span class="city">Miami</span><span class="city">Orlando</span><span class="city">Tampa</span><span class="city">Jacksonville</span><span class="city">Fort Lauderdale</span><span class="city">West Palm Beach</span><span class="city">Hialeah</span><span class="city">Kissimmee</span><span class="city">Cape Coral</span><span class="city">Naples</span><span class="city">Tallahassee</span><span class="city">Pensacola</span>
+  </div>
+</section>
+
+<section class="pricing" id="pricing">
+  <div style="max-width:1200px;margin:0 auto" class="reveal">
+    <p class="kicker">Pricing</p>
+    <h2>Pay per estimate.<br>Not per headache.</h2>
+  </div>
+  <div class="pricing-grid">
+    <div class="plan reveal">
+      <span class="name">Adjusters</span>
+      <div class="price">$0<small> / forever</small></div>
+      <ul><li>Unlimited estimates</li><li>VIN decode + recall check</li><li>PDF export</li><li>Carrier-branded sheets</li></ul>
+      <a class="go" href="#pricing">Claim free seat</a>
+    </div>
+    <div class="plan hot reveal">
+      <span class="name">Single</span>
+      <div class="price">$29<small> / estimate</small></div>
+      <ul><li>1 full AI estimate</li><li>Line-item sheet + photos map</li><li>Valid 30 days</li><li>Stripe · Apple Pay · Google Pay</li></ul>
+      <a class="go" href="#pricing">Start estimate</a>
+    </div>
+    <div class="plan reveal">
+      <span class="name">Shops</span>
+      <div class="price">$199<small> / month</small></div>
+      <ul><li>Unlimited estimates</li><li>DMS integration</li><li>Team seats included</li><li>Priority processing</li></ul>
+      <a class="go" href="#pricing">Open shop account</a>
+    </div>
+  </div>
+</section>
+
+<section class="final reveal">
+  <h2>The next dent you see,<br><span>price it in 90 seconds.</span></h2>
+  <p>Free for adjusters. $29 for everyone else. No app to install — it runs in your browser.</p>
+  <a class="btn-tape" href="#pricing">Upload photos →</a>
+</section>
+
+<!-- UPLOAD MODAL -->
+<div class="modal" id="uploadModal" role="dialog" aria-modal="true" aria-label="Start estimate">
+  <div class="modal-card">
+    <div class="modal-head"><span>Start your estimate</span><button class="modal-close" id="modalClose" aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <form id="estForm">
+        <div class="field">
+          <label for="vinInput">VIN — 17 characters</label>
+          <input type="text" id="vinInput" maxlength="17" minlength="17" placeholder="4T1BF1FK5FU889302" required>
+        </div>
+        <div class="field">
+          <label for="emailInput">Email — your estimate goes here</label>
+          <input type="email" id="emailInput" placeholder="you@email.com" required>
+        </div>
+        <div class="field">
+          <label>Damage photos — 4 to 12</label>
+          <div class="drop" id="dropZone">
+            <div class="big">Drop photos here</div>
+            <div class="small">or click to browse · jpg / png / webp · max 15MB each</div>
+            <input type="file" id="fileInput" accept="image/*" multiple hidden>
+          </div>
+          <div class="thumbs" id="thumbs"></div>
+        </div>
+        <button class="submit-est" id="submitBtn" type="submit">Analyze my damage — $29</button>
+        <div class="est-status" id="estStatus"></div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span>© 2026 PixClaim · TOUR.567 LLC</span>
+  <span>Made in Florida, USA</span>
+  <span><a href="mailto:enterprise@pixclaim.com">enterprise@pixclaim.com</a></span>
+</footer>
+
+<script>
+window.addEventListener('load',()=>document.body.classList.add('loaded'));
+
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}}),{threshold:.15});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+const items=document.querySelectorAll('.line-item');
+const totalEl=document.getElementById('totalVal');
+const TOTAL=1925;
+let counted=false;
+const io2=new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting && !counted){
+    counted=true;
+    items.forEach((it,i)=>setTimeout(()=>it.classList.add('show'),i*160));
+    const t0=performance.now();
+    const tick=t=>{const p=Math.min((t-t0)/1400,1);const v=Math.round(TOTAL*(1-Math.pow(1-p,3)));
+      totalEl.textContent='$'+v.toLocaleString();if(p<1)requestAnimationFrame(tick);};
+    setTimeout(()=>requestAnimationFrame(tick),items.length*160);
+    io2.disconnect();
+  }
+}),{threshold:.35});
+io2.observe(document.getElementById('estimateCard'));
+
+const tt=document.getElementById('tickerTrack');
+tt.innerHTML+=tt.innerHTML;
+
+/* ---------- UPLOAD FLOW ---------- */
+// Cambia esta URL cuando despliegues: p.ej. 'http://135.148.232.10:8000'
+const API_URL = window.PIXCLAIM_API_URL || '';
+
+const modal=document.getElementById('uploadModal');
+const openModal=()=>{modal.classList.add('open');document.body.style.overflow='hidden';};
+const closeModal=()=>{modal.classList.remove('open');document.body.style.overflow='';};
+document.querySelectorAll('a[href="#pricing"],a[href="#start"]').forEach(a=>{
+  if(a.textContent.match(/upload|start|claim|open/i)){a.addEventListener('click',e=>{e.preventDefault();openModal();});}
+});
+document.getElementById('modalClose').addEventListener('click',closeModal);
+modal.addEventListener('click',e=>{if(e.target===modal)closeModal();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+
+const drop=document.getElementById('dropZone');
+const fileInput=document.getElementById('fileInput');
+const thumbs=document.getElementById('thumbs');
+let files=[];
+drop.addEventListener('click',()=>fileInput.click());
+drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
+drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
+drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');addFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>addFiles(fileInput.files));
+function addFiles(list){
+  for(const f of list){
+    if(files.length>=12)break;
+    if(!f.type.startsWith('image/'))continue;
+    files.push(f);
+    const url=URL.createObjectURL(f);
+    const img=document.createElement('img');img.src=url;img.alt=f.name;
+    thumbs.appendChild(img);
+  }
+}
+
+const form=document.getElementById('estForm');
+const btn=document.getElementById('submitBtn');
+const status=document.getElementById('estStatus');
+function setStatus(cls,html){status.className='est-status '+cls;status.innerHTML=html;}
+
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const vin=document.getElementById('vinInput').value.trim().toUpperCase();
+  const email=document.getElementById('emailInput').value.trim();
+  if(vin.length!==17){setStatus('err','VIN must be exactly 17 characters. Find it on the driver-side door sticker.');return;}
+  if(files.length<1){setStatus('err','Add at least one photo of the damage.');return;}
+  btn.disabled=true;btn.textContent='Uploading…';
+  setStatus('work','Uploading '+files.length+' photos…');
+  try{
+    const fd=new FormData();
+    fd.append('vin',vin);
+    fd.append('email',email);
+    files.forEach(f=>fd.append('photos',f));
+    const res=await fetch(API_URL+'/api/v1/estimate/upload',{method:'POST',body:fd});
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.detail||'Upload failed');
+    setStatus('ok','✓ Estimate <b>#'+data.estimate_id+'</b> queued.<br>We received '+data.photos_received+' photos for VIN '+data.vin+'.<br>Your estimate arrives at <b>'+email+'</b> — payment link included.');
+    btn.textContent='Done ✓';
+    form.reset();files=[];thumbs.innerHTML='';
+  }catch(err){
+    setStatus('err','Could not reach the estimate engine: '+err.message+'.<br>Check your connection and try again.');
+    btn.disabled=false;btn.textContent='Analyze my damage — $29';
+  }
+});
+</script>
+</body>
+</html>
